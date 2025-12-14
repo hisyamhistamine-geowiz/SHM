@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sarawak Heritage Map</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
+        
+        #container { display: flex; height: 100vh; flex-direction: column; }
+        
+        #controls {
+            background: #2c3e50;
+            color: white;
+            padding: 15px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            z-index: 1000;
+        }
+
+        h2 { margin: 0; margin-right: 20px; font-size: 1.2rem; }
+        
+        select {
+            padding: 8px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            background-color: #ecf0f1;
+            color: #2c3e50;
+        }
+
+        select:hover { background-color: #dce4e6; }
+
+        #map { flex-grow: 1; width: 100%; z-index: 1; }
+
+        .popup-content b { color: #2c3e50; font-size: 1.1em; }
+        .popup-content p { margin: 5px 0; color: #555; }
+        
+        /* Legend for colors (Optional visual cue) */
+        .legend-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <div id="controls">
+        <h2>Sarawak Heritage Map</h2>
+        
+        <select id="districtFilter" onchange="applyFilters()">
+            <option value="all">All Districts</option>
+        </select>
+
+        <select id="categoryFilter" onchange="applyFilters()">
+            <option value="all">All Categories</option>
+        </select>
+
+        <select id="yearFilter" onchange="applyFilters()">
+            <option value="all">All Years</option>
+        </select>
+
+        <select id="ordinanceFilter" onchange="applyFilters()">
+            <option value="all">All Ordinances</option>
+        </select>
+    </div>
+
+    <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+<script>
+    // 1. Initialize Map
+    const map = L.map('map').setView([2.55, 113.0], 7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    let allData = [];
+    let markers = L.layerGroup().addTo(map);
+
+    // --- COLOR PALETTE SYSTEM ---
+    // We use these icons from GitHub (leaflet-color-markers)
+    const markerColors = [
+        "blue", "red", "green", "orange", "violet", "gold", "grey", "black"
+    ];
+    
+    // This object remembers which category gets which color. 
+    // Example: { "Religious": "red", "Government": "blue" }
+    const categoryColorMap = {}; 
+
+    function getColoredIcon(colorName) {
+        return new L.Icon({
+            iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${colorName}.png`,
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            shadowSize: [41, 41]
+        });
+    }
+    // ---------------------------
+
+    // 2. Load CSV
+    // Ensure "heritage_data.csv" is in the SAME folder on GitHub
+    Papa.parse("heritage_data.csv", {
+        download: true,
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: function(header) {
+            // Clean invisible BOM characters and spaces
+            return header.replace(/[\ufeff|\x00-\x20]/g, ' ').trim(); 
+        },
+        complete: function(results) {
+            console.log("Found Columns:", results.meta.fields); 
+            allData = results.data;
+            assignColorsToCategories(allData); // Assign colors before rendering
+            populateFilters(allData);
+            renderMap(allData);
+        },
+        error: function(err) {
+            alert("Error loading CSV: " + err.message);
+        }
+    });
+
+    // 3. Helper: Loose Column Finder
+    function getVal(row, keyword) {
+        const key = Object.keys(row).find(k => k.toLowerCase().includes(keyword.toLowerCase()));
+        return key ? row[key] : null;
+    }
+
+    // 4. Assign Colors Logic
+    function assignColorsToCategories(data) {
+        let colorIndex = 0;
+        data.forEach(row => {
+            const cat = getVal(row, "category");
+            if (cat && !categoryColorMap[cat.trim()]) {
+                // Assign the next color in the list. If we run out, cycle back to start using modulo (%)
+                categoryColorMap[cat.trim()] = markerColors[colorIndex % markerColors.length];
+                colorIndex++;
+            }
+        });
+    }
+
+    function renderMap(data) {
+        markers.clearLayers();
+
+        data.forEach(row => {
+            const nameVal = getVal(row, "name") || "Unknown Name";
+            const districtVal = getVal(row, "district") || "";
+            const locationVal = getVal(row, "location") || "";
+            const categoryVal = getVal(row, "category") || "Uncategorized";
+            const yearVal = getVal(row, "year") || "N/A"; 
+            const ordinanceVal = getVal(row, "ordinance") || "N/A"; // New Column
+            const coordStr = getVal(row, "coordinate"); 
+
+            if (coordStr && coordStr.includes(',')) {
+                const [lat, lng] = coordStr.split(',').map(c => parseFloat(c.trim()));
+
+                if (!isNaN(lat) && !isNaN(lng)) {
+                    // Get color based on category
+                    const colorName = categoryColorMap[categoryVal.trim()] || "blue";
+                    const customIcon = getColoredIcon(colorName);
+
+                    const marker = L.marker([lat, lng], { icon: customIcon });
+
+                    const popupContent = `
+                        <div class="popup-content">
+                            <b>${nameVal}</b><br>
+                            <span style="color:${colorName}; font-weight:bold;">● ${categoryVal}</span><br>
+                            <p>📍 ${locationVal}, ${districtVal}</p>
+                            <p>📅 Built: ${yearVal}</p>
+                            <p>⚖️ Ordinance: ${ordinanceVal}</p>
+                        </div>
+                    `;
+                    marker.bindPopup(popupContent);
+                    markers.addLayer(marker);
+                }
+            }
+        });
+    }
+
+    function populateFilters(data) {
+        const districts = new Set();
+        const categories = new Set();
+        const years = new Set();
+        const ordinances = new Set();
+
+        data.forEach(row => {
+            const d = getVal(row, "district");
+            const c = getVal(row, "category");
+            const y = getVal(row, "year");
+            const o = getVal(row, "ordinance");
+
+            if (d) districts.add(d.trim());
+            if (c) categories.add(c.trim());
+            if (y) years.add(y.trim());
+            if (o) ordinances.add(o.trim());
+        });
+
+        updateSelect("districtFilter", districts);
+        updateSelect("categoryFilter", categories);
+        updateSelect("yearFilter", years);
+        updateSelect("ordinanceFilter", ordinances);
+    }
+
+    function updateSelect(id, items) {
+        const select = document.getElementById(id);
+        select.innerHTML = select.options[0].outerHTML; 
+        Array.from(items).sort().forEach(item => {
+            if(item) { 
+                const option = document.createElement("option");
+                option.value = item;
+                option.textContent = item;
+                select.appendChild(option);
+            }
+        });
+    }
+
+    function applyFilters() {
+        const districtVal = document.getElementById("districtFilter").value;
+        const categoryVal = document.getElementById("categoryFilter").value;
+        const yearVal = document.getElementById("yearFilter").value;
+        const ordinanceVal = document.getElementById("ordinanceFilter").value;
+
+        const filteredData = allData.filter(row => {
+            const d = getVal(row, "district") || "";
+            const c = getVal(row, "category") || "";
+            const y = getVal(row, "year") || "";
+            const o = getVal(row, "ordinance") || "";
+
+            return (districtVal === "all" || d === districtVal) &&
+                   (categoryVal === "all" || c === categoryVal) &&
+                   (yearVal === "all" || y === yearVal) &&
+                   (ordinanceVal === "all" || o === ordinanceVal);
+        });
+        renderMap(filteredData);
+    }
+</script>
+
+</body>
+</html>
